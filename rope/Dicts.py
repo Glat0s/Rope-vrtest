@@ -246,6 +246,9 @@ DEFAULT_DATA = {
 'CLIPSwitchInfoText':               'TEXT MASKING:\nUse descriptions to identify objects that will be present in the final swapped image.',
 'CLIPSwitchState':                  False,
 
+'VR180SwitchInfoText':              'VR 180°:\nEnable VR 180° swapping',
+'VR180SwitchState':                 False,
+
 'VirtualCameraSwitchState':         False,
 'VirtualCameraSwitchInfoText':      'VIRTUAL CAMERA:\nFeed the swapped video output to virtual camera for using in external applications',
 

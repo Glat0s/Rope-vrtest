@@ -74,6 +74,14 @@ def coordinator():
             vm.change_webcam_resolution_and_fps()
             action.pop(0)
 
+        elif action[0][0] == "enable_vr180":
+            vm.enable_vr180()
+            action.pop(0)
+
+        elif action[0][0] == "disable_vr180":
+            vm.disable_vr180()
+            action.pop(0)
+
         elif action[0][0] == "target_faces":
             vm.assign_found_faces(action[0][1])
             action.pop(0)

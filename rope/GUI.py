@@ -150,6 +150,7 @@ class GUI(tk.Tk):
                     "Delete Marker": "alt+f",
                     "Previous Marker": "q",
                     "Next Marker": "w",
+                    "Toggle VR180": "u",
                     "Toggle Restorer": "1",
                     "Toggle Restorer2": "h",
                     "Toggle Orientation": "2",
@@ -185,6 +186,7 @@ class GUI(tk.Tk):
             shortcuts["Delete Marker"]: lambda: self.update_marker('delete'),
             shortcuts["Previous Marker"]: lambda: self.update_marker('prev'),
             shortcuts["Next Marker"]: lambda: self.update_marker('next'),
+            shortcuts["Toggle VR180"]: lambda: self.update_marker('VR180', 'VR180'),
             shortcuts["Toggle Restorer"]: lambda: self.toggle_and_update('Restorer', 'Restorer'),
             shortcuts["Toggle Restorer2"]: lambda: self.toggle_and_update('Restorer2', 'Restorer2'),
             shortcuts["Toggle Orientation"]: lambda: self.toggle_and_update('Orient', 'Orientation'),
@@ -1115,6 +1117,10 @@ class GUI(tk.Tk):
         #Virtual Cam
         row = row + 1
         self.widget['VirtualCameraSwitch'] = GE.Switch2(self.layer['parameters_frame'], 'VirtualCameraSwitch', 'Send Frames to Virtual Camera', 3, self.toggle_virtualcam, 'control', 398, 20, row, 0, padx, pady)
+
+        #VR180
+        row = row + 1
+        self.widget['VR180Switch'] = GE.Switch2(self.layer['parameters_frame'], 'VR180Switch', 'Enable VR 180°', 3, self.toggle_vr180, 'control', 398, 20, row, 0, padx, pady)
 
         # Restore
         row = row + 1
@@ -3305,6 +3311,14 @@ class GUI(tk.Tk):
             self.add_action('enable_virtualcam')
         else:
             self.add_action('disable_virtualcam')
+
+    def toggle_vr180(self, mode, name, use_markers=False):
+        self.control[name] =  self.widget[name].get()
+        self.add_action('control', self.control)
+        if self.control[name]:
+            self.add_action('enable_vr180')
+        else:
+            self.add_action('disable_vr180')
 
     def disable_record_button(self):
         self.widget['TLRecButton'].disable_button()

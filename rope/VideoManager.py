@@ -20,11 +20,13 @@ from torchvision.transforms import v2
 torch.set_grad_enabled(False)
 onnxruntime.set_default_logger_severity(4)
 import rope.FaceUtil as faceutil
+from rope.lib import Equirec2Perspec as E2P, Perspec2Equirec as P2E
 
 import inspect #print(inspect.currentframe().f_back.f_code.co_name, 'resize_image')
 import pyvirtualcam
 import platform
 import psutil
+import cupy as cp
 
 from rope.DFMModel import DFMModel
 from rope.Dicts import CAMERA_BACKENDS
@@ -155,6 +157,76 @@ class VideoManager():
                 self.add_action('clear_faces_stop_swap', None)
                 self.add_action('clear_stop_enhance', None)
                 self.add_action('clear_stop_faces_editor', None)
+
+    def enable_vr180(self):
+        self.vr180 = True
+
+    def disable_vr180(self):
+        self.vr180 = False
+
+    def split_vr_image(self, img):
+        """
+        Split a side-by-side VR image into left and right images.
+        
+        Parameters:
+        img (numpy.ndarray): The input side-by-side VR image
+        
+        Returns:
+        tuple: (left_image, right_image)
+        """
+        height, width = img.shape[:2]
+        mid = width // 2
+        
+        left_image = img[:, :mid].copy()
+        right_image = img[:, mid:].copy()
+        
+        return left_image, right_image
+
+
+    def extractFace(self, input_img, bbox):
+        #bbox = face.bbox
+        print (bbox)
+        # Load equirectangular image
+        equ = E2P.Equirectangular(input_img)   
+
+        # Convert bounding box to ints
+        x1, y1, x2, y2 = map(int, bbox[0])
+
+        # Determine the center of the bounding box
+        x_center = (x1 + x2) / 2
+        y_center = (y1 + y2) / 2
+
+        # Normalize coordinates to range [-1, 1]
+        x_center_normalized = x_center / (equ.get_width() / 2) - 1
+        y_center_normalized = y_center / (equ.get_height() / 2) - 1
+
+        # Convert normalized coordinates to spherical (theta, phi)
+        theta = x_center_normalized * 180  # Theta ranges from -180 to 180 degrees
+        phi = -y_center_normalized * 90  # Phi ranges from -90 to 90 degrees
+
+        img = equ.GetPerspective(90, theta, phi, 1280, 1280)  # Generate perspective image
+        #output_path = os.path.join(output_dir, f'{frame_name}_{side}.jpg')
+        #cv2.imwrite(output_path, img)
+        #store_exif_info(output_path, theta, phi)
+        #storeInfo(frame_name, side, output_dir, theta, phi)
+        return img, theta, phi
+
+    def apply_feathering(self, mask):
+        gradient_x = cv2.Sobel(mask.astype(np.float32), cv2.CV_64F, 1, 0, ksize=3)
+        gradient_y = cv2.Sobel(mask.astype(np.float32), cv2.CV_64F, 0, 1, ksize=3)
+        gradient_magnitude = np.sqrt(gradient_x ** 2 + gradient_y ** 2)
+        feathered_mask = 1 - gradient_magnitude / cp.amax(gradient_magnitude)
+        return feathered_mask
+
+    def persp2equir_single(self, input_img, theta, phi, orig_height, orig_width):
+        persp = P2E.Perspective(input_img, 90, theta, phi)
+        img, _ = persp.GetEquirec(orig_height, orig_width)
+
+        # Compute masks and apply feathering
+        mask = cp.sum(img, axis=2) > 0
+        feathered_mask = self.apply_feathering(mask)
+
+        return img, feathered_mask
 
     def load_target_video( self, file ):
         # If we already have a video loaded, release it
@@ -309,7 +381,79 @@ class VideoManager():
                 if not self.control['SwapFacesButton'] and not self.control['EditFacesButton']:
                     temp = [target_image, self.current_frame] #temp = RGB
                 else:
-                    temp = [self.swap_video(target_image, self.current_frame, marker), self.current_frame] # temp = RGB
+                    if self.vr180:
+                        #print("vr180 active")
+                        rotation_angles = [0, 90, 180, 270]
+                        #split left right
+                        left_eye, right_eye = self.split_vr_image(target_image)
+                        # Debug - Save original left + right images as a JPEG file
+                        #outorigleft = Image.fromarray(left_eye)
+                        #outorigright = Image.fromarray(right_eye)
+                        #outorigleft.save("left_orig.jpg")
+                        #outorigright.save("right_orig.jpg")
+                        
+                        imgleft = torch.from_numpy(left_eye.astype('uint8')).to(self.models.device) #HxWxc
+                        imgleft = imgleft.permute(2,0,1)
+
+                        imgright = torch.from_numpy(right_eye.astype('uint8')).to(self.models.device) #HxWxc
+                        imgright = imgright.permute(2,0,1)
+                     
+                        bboxes_left, kpss_5_left, kpss_left = self.func_w_test("detect", self.models.run_detect, imgleft, detect_mode='Retinaface', max_num=1, score=0.5, use_landmark_detection=False, landmark_detect_mode='203', landmark_score=0.5, from_points=False, rotation_angles=rotation_angles)
+                        
+                        bboxes_right, kpss_5_right, kpss_right = self.func_w_test("detect", self.models.run_detect, imgright, detect_mode='Retinaface', max_num=1, score=0.5, use_landmark_detection=False, landmark_detect_mode='203', landmark_score=0.5, from_points=False, rotation_angles=rotation_angles)
+                        
+                        # extract flat image of part with face
+                        left_eye_flat, left_theta, left_phi = self.extractFace(left_eye, bboxes_left)
+                        right_eye_flat, right_theta, right_phi = self.extractFace(right_eye, bboxes_right)
+                        
+                        # Debug - Save flattened image parts as a JPEG file
+                        #flatleft = Image.fromarray(left_eye_flat)
+                        #flatright = Image.fromarray(right_eye_flat)
+                        #flatleft.save("left_flat.jpg")
+                        #flatright.save("right_flat.jpg")   
+                        
+                        #swap left side part of image (somehow not swap in results yet)
+                        swap_left = [self.swap_video(left_eye_flat, self.current_frame, marker), self.current_frame] # image = RGB
+                        #swap right side part of image (somehow not swap in results yet)
+                        swap_right = [self.swap_video(right_eye_flat, self.current_frame, marker), self.current_frame] # image = RGB
+                        
+                        # Debug - Save flattened swapped image parts as a JPEG file
+                        #swappedleft = Image.fromarray(swap_left[0])
+                        #swappedright = Image.fromarray(swap_right[0])
+                        #swappedleft.save("left_swapped.jpg")
+                        #swappedright.save("right_swapped.jpg")                        
+                        
+                        # Patch swapped image parts back into original fisheye images and combine back to full VR180 left+right image (not tested yet!)
+                        orig_height, orig_width = target_image.shape[:2]
+                        img1 = cp.zeros((orig_height, orig_width, 3), dtype=cp.uint8)
+                        img2 = cp.zeros((orig_height, orig_width, 3), dtype=cp.uint8)
+                        
+                        img1, feathered_mask1 = self.persp2equir_single(swap_left[0], left_theta, left_phi, orig_height, orig_width)
+                        img2, feathered_mask2 = self.persp2equir_single(swap_right[0], right_theta, right_phi, orig_height, orig_width)
+
+                        half_width = orig_width // 2
+                        img1[:, half_width:] = 0
+                        img2[:, :half_width] = 0
+
+                        if cp.sum(img1) > 0:
+                            # Create composite images by blending the feathered perspectives with the original image
+                            composite1 = target_image * (1 - feathered_mask1[..., cp.newaxis]) + img1 * feathered_mask1[..., cp.newaxis]
+
+                            # Replace pixels in the original image with those from the transformed perspectives respecting the feathered masks
+                            mask1 = cp.sum(img1, axis=2) > 0
+                            target_image[mask1] = composite1[mask1]
+
+                        if cp.sum(img2) > 0:
+                            # Create composite images by blending the feathered perspectives with the original image
+                            composite2 = target_image * (1 - feathered_mask2[..., cp.newaxis]) + img2 * feathered_mask2[..., cp.newaxis]
+
+                            # Replace pixels in the original image with those from the transformed perspectives respecting the feathered masks
+                            mask2 = cp.sum(img2, axis=2) > 0
+                            target_image[mask2] = composite2[mask2]
+                    
+                        temp = target_image
+                    else:
+                        temp = [self.swap_video(target_image, self.current_frame, marker), self.current_frame] # temp = RGB
 
                 if self.control['EnhanceFrameButton']:
                     temp[0] = self.enhance_video(temp[0], self.current_frame, marker) # temp = RGB
